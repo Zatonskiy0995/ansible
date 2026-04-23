@@ -30,7 +30,7 @@
 
 1. Проверка синтаксиса:
 
-   ansible-playbook --syntax-check playbooks/awg_clients_report.yml
+   ansible-playbook -i inventories/hosts.yml --syntax-check playbooks/awg_clients_report.yml
 
 2. Выполнение:
 

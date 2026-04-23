@@ -1,7 +1,7 @@
 ---
 # Настройки контейнера и БД
 awg_container_name: amnezia-awg2
-awg_sqlite_db_path: /opt/amnezia/awg/0.conf
+awg_sqlite_db_path: /opt/amnezia/awg/awg0.conf
 awg_table_name: clientsTable
 
 # Названия колонок в таблице clientsTable (при необходимости поменяй под свою схему)
