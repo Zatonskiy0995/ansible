@@ -138,37 +138,37 @@
       when: sqlite3_in_container.rc != 0
 
     - name: Read clientsTable data via host python sqlite3 (fallback)
-      ansible.builtin.shell: |
-        #!/bin/bash
-        set -o pipefail
+      ansible.builtin.shell:
+        cmd: |
+          #!/bin/bash
+          set -o pipefail
 
-        CONTAINER="{{ awg_container_name }}"
-        CANDIDATES='{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}'
-        SQL_QUERY='{{ awg_sql_query }}'
+          CONTAINER="{{ awg_container_name }}"
+          CANDIDATES='{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}'
+          SQL_QUERY='{{ awg_sql_query }}'
 
-        FOUND=0
-        while IFS= read -r DB_PATH; do
-          [ -z "$DB_PATH" ] && continue
-          TMP="/tmp/awg_test_$$.db"
-          
-          if docker cp "$CONTAINER:$DB_PATH" "$TMP" 2>/dev/null; then
-            # Проверяем валидность и наличие таблицы
-            if python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); c.cursor().execute('SELECT 1 FROM clientsTable LIMIT 1'); c.close()" 2>/dev/null; then
-              # Выполняем запрос
-              python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); [print(r[0]) for r in c.cursor().execute('''$SQL_QUERY''')]; c.close()"
-              FOUND=1
+          FOUND=0
+          while IFS= read -r DB_PATH; do
+            [ -z "$DB_PATH" ] && continue
+            TMP="/tmp/awg_test_$$.db"
+            
+            if docker cp "$CONTAINER:$DB_PATH" "$TMP" 2>/dev/null; then
+              # Проверяем валидность и наличие таблицы
+              if python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); c.cursor().execute('SELECT 1 FROM clientsTable LIMIT 1'); c.close()" 2>/dev/null; then
+                # Выполняем запрос
+                python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); [print(r[0]) for r in c.cursor().execute('''$SQL_QUERY''')]; c.close()"
+                FOUND=1
+                rm -f "$TMP"
+                break
+              fi
               rm -f "$TMP"
-              break
             fi
-            rm -f "$TMP"
-          fi
-        done <<< "$CANDIDATES"
+          done <<< "$CANDIDATES"
 
-        if [ "$FOUND" -eq 0 ]; then
-          echo "ERROR: No valid SQLite DB with clientsTable found" >&2
-          exit 1
-        fi
-      args:
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: No valid SQLite DB with clientsTable found" >&2
+            exit 1
+          fi
         executable: /bin/bash
       register: awg_query
       changed_when: false
