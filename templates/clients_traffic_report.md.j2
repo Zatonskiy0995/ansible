@@ -1,0 +1,20 @@
+# Отчет по клиентам AWG
+
+- Контейнер: {{ awg_container_name }}
+- Таблица: {{ awg_table_name }}
+- Сформирован: {{ ansible_date_time.iso8601 }}
+
+## Сводка
+
+- Количество клиентов: {{ awg_clients_sorted | length }}
+- Суммарно входящий трафик: {{ (awg_clients_sorted | map(attribute='rx_mib') | sum) | round(2) }} MiB
+- Суммарно исходящий трафик: {{ (awg_clients_sorted | map(attribute='tx_mib') | sum) | round(2) }} MiB
+- Общий трафик: {{ (awg_clients_sorted | map(attribute='total_mib') | sum) | round(2) }} MiB
+
+## Детализация
+
+| Клиент | Потратил (RX, MiB) | Отдал (TX, MiB) | Всего (MiB) | Локальная подсеть |
+|---|---:|---:|---:|---|
+{% for c in awg_clients_sorted %}
+| {{ c.client }} | {{ c.rx_mib }} | {{ c.tx_mib }} | {{ c.total_mib }} | {{ c.local_subnet }} |
+{% endfor %}
