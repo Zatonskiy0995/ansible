@@ -138,27 +138,76 @@
       when: sqlite3_in_container.rc != 0
 
     - name: Read clientsTable data via host python sqlite3 (fallback)
-      ansible.builtin.shell: >
-        CONTAINER="{{ awg_container_name }}" &&
-        CANDIDATES='{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}' &&
-        SQL_QUERY='{{ awg_sql_query }}' &&
-        FOUND=0 &&
-        echo "$CANDIDATES" | while IFS= read -r DB_PATH; do
-          [ -z "$DB_PATH" ] && continue;
-          TMP="/tmp/awg_test_$$.db";
-          if docker cp "{{ awg_container_name }}:$DB_PATH" "$TMP" 2>/dev/null; then
-            if python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); c.cursor().execute('SELECT 1 FROM clientsTable LIMIT 1'); c.close()" 2>/dev/null; then
-              python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); [print(r[0]) for r in c.cursor().execute('$SQL_QUERY')]; c.close()";
-              rm -f "$TMP";
-              exit 0;
-            fi;
-            rm -f "$TMP";
-          fi;
-        done
-      args:
-        executable: /bin/bash
+      ansible.builtin.copy:
+        content: |
+          #!/usr/bin/env python3
+          import subprocess
+          import sqlite3
+          import os
+          import tempfile
+          import sys
+
+          container = "{{ awg_container_name }}"
+          candidates = """{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}"""
+          sql_query = """{{ awg_sql_query }}"""
+
+          for db_path in candidates.strip().split('\n'):
+              if not db_path:
+                  continue
+
+              with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+                  tmp_path = tmp.name
+
+              try:
+                  # Copy DB from container
+                  result = subprocess.run(['docker', 'cp', f'{container}:{db_path}', tmp_path], 
+                                        capture_output=True, timeout=10)
+                  if result.returncode != 0:
+                      continue
+
+                  # Check if it's valid SQLite with clientsTable
+                  try:
+                      conn = sqlite3.connect(tmp_path)
+                      cur = conn.cursor()
+                      cur.execute('SELECT 1 FROM clientsTable LIMIT 1')
+                      conn.close()
+                  except:
+                      os.unlink(tmp_path)
+                      continue
+
+                  # Execute query
+                  conn = sqlite3.connect(tmp_path)
+                  cur = conn.cursor()
+                  for row in cur.execute(sql_query):
+                      print(row[0])
+                  conn.close()
+                  os.unlink(tmp_path)
+                  sys.exit(0)
+
+              except Exception as e:
+                  if os.path.exists(tmp_path):
+                      os.unlink(tmp_path)
+                  continue
+
+          print("ERROR: No valid SQLite DB with clientsTable found", file=sys.stderr)
+          sys.exit(1)
+        dest: /tmp/awg_read_db.py
+        mode: '0755'
+      when: sqlite3_in_container.rc != 0
+
+    - name: Execute Python DB reader
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /tmp/awg_read_db.py
       register: awg_query
       changed_when: false
+      when: sqlite3_in_container.rc != 0
+
+    - name: Cleanup Python DB reader script
+      ansible.builtin.file:
+        path: /tmp/awg_read_db.py
+        state: absent
       when: sqlite3_in_container.rc != 0
 
     - name: Render markdown report
