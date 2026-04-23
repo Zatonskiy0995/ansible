@@ -24,3 +24,6 @@ awg_sql_query: >-
 # Куда сохранить markdown-отчет
 awg_report_dir: "{{ playbook_dir }}/../reports"
 awg_report_output: "{{ playbook_dir }}/../reports/clients_traffic_report.md"
+
+# Временный путь на хосте для fallback, если в контейнере нет sqlite3
+awg_tmp_db_path: /tmp/awg_clients_report.db

@@ -26,7 +26,20 @@
       changed_when: false
       failed_when: container_state.rc != 0 or (container_state.stdout | trim) != 'true'
 
-    - name: Read clientsTable data from sqlite inside container
+    - name: Check sqlite3 exists inside container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ awg_container_name }}"
+          - sh
+          - -lc
+          - command -v sqlite3
+      register: sqlite3_in_container
+      changed_when: false
+      failed_when: false
+
+    - name: Read clientsTable data via sqlite3 inside container
       ansible.builtin.command:
         argv:
           - docker
@@ -37,6 +50,36 @@
           - "{{ awg_sql_query }}"
       register: awg_query
       changed_when: false
+      when: sqlite3_in_container.rc == 0
+
+    - name: Copy sqlite DB from container to host (fallback)
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - "{{ awg_container_name }}:{{ awg_sqlite_db_path }}"
+          - "{{ awg_tmp_db_path }}"
+      register: awg_db_copy
+      changed_when: true
+      when: sqlite3_in_container.rc != 0
+
+    - name: Read clientsTable data via host python sqlite3 (fallback)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import sqlite3,sys; conn=sqlite3.connect(sys.argv[1]); cur=conn.cursor(); [print(r[0]) for r in cur.execute(sys.argv[2])]; conn.close()"
+          - "{{ awg_tmp_db_path }}"
+          - "{{ awg_sql_query }}"
+      register: awg_query
+      changed_when: false
+      when: sqlite3_in_container.rc != 0
+
+    - name: Remove temporary DB copy (fallback)
+      ansible.builtin.file:
+        path: "{{ awg_tmp_db_path }}"
+        state: absent
+      when: sqlite3_in_container.rc != 0
 
     - name: Render markdown report
       ansible.builtin.copy:
