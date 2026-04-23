@@ -10,14 +10,17 @@ awg_column_rx_bytes: rx_bytes
 awg_column_tx_bytes: tx_bytes
 awg_column_local_subnet: local_subnet
 
-# SQL собирается с алиасами, чтобы плейбук не зависел от реальных имен полей
+# SQL возвращает готовые markdown-строки, отсортированные по суммарному трафику
 awg_sql_query: >-
   SELECT
-    {{ awg_column_client }} AS client,
-    {{ awg_column_rx_bytes }} AS rx_bytes,
-    {{ awg_column_tx_bytes }} AS tx_bytes,
-    {{ awg_column_local_subnet }} AS local_subnet
-  FROM {{ awg_table_name }};
+    COALESCE({{ awg_column_client }}, 'unknown') || ' | ' ||
+    ROUND(COALESCE({{ awg_column_rx_bytes }}, 0) / 1048576.0, 2) || ' | ' ||
+    ROUND(COALESCE({{ awg_column_tx_bytes }}, 0) / 1048576.0, 2) || ' | ' ||
+    ROUND((COALESCE({{ awg_column_rx_bytes }}, 0) + COALESCE({{ awg_column_tx_bytes }}, 0)) / 1048576.0, 2) || ' | ' ||
+    COALESCE({{ awg_column_local_subnet }}, 'n/a')
+  FROM {{ awg_table_name }}
+  ORDER BY (COALESCE({{ awg_column_rx_bytes }}, 0) + COALESCE({{ awg_column_tx_bytes }}, 0)) DESC;
 
 # Куда сохранить markdown-отчет
+awg_report_dir: "{{ playbook_dir }}/../reports"
 awg_report_output: "{{ playbook_dir }}/../reports/clients_traffic_report.md"
