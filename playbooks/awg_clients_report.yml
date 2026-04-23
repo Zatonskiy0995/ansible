@@ -137,14 +137,41 @@
       changed_when: false
       when: sqlite3_in_container.rc != 0
 
-    - name: Test each DB candidate and read clientsTable data via host python
-      block:
-        - name: Try each DB candidate
-          include_tasks: try_db_candidate.yml
-          loop: "{{ awg_db_candidates.stdout_lines | default([]) }}"
-          loop_control:
-            loop_var: awg_db_candidate_path
-            index_var: candidate_index
+    - name: Read clientsTable data via host python sqlite3 (fallback)
+      ansible.builtin.shell: |
+        #!/bin/bash
+        set -o pipefail
+
+        CONTAINER="{{ awg_container_name }}"
+        CANDIDATES='{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}'
+        SQL_QUERY='{{ awg_sql_query }}'
+
+        FOUND=0
+        while IFS= read -r DB_PATH; do
+          [ -z "$DB_PATH" ] && continue
+          TMP="/tmp/awg_test_$$.db"
+          
+          if docker cp "$CONTAINER:$DB_PATH" "$TMP" 2>/dev/null; then
+            # Проверяем валидность и наличие таблицы
+            if python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); c.cursor().execute('SELECT 1 FROM clientsTable LIMIT 1'); c.close()" 2>/dev/null; then
+              # Выполняем запрос
+              python3 -c "import sqlite3; c=sqlite3.connect('$TMP'); [print(r[0]) for r in c.cursor().execute('''$SQL_QUERY''')]; c.close()"
+              FOUND=1
+              rm -f "$TMP"
+              break
+            fi
+            rm -f "$TMP"
+          fi
+        done <<< "$CANDIDATES"
+
+        if [ "$FOUND" -eq 0 ]; then
+          echo "ERROR: No valid SQLite DB with clientsTable found" >&2
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      register: awg_query
+      changed_when: false
       when: sqlite3_in_container.rc != 0
 
     - name: Render markdown report
@@ -160,8 +187,7 @@
 
           | Клиент | Потратил (RX, MiB) | Отдал (TX, MiB) | Всего (MiB) | Локальная подсеть |
           |---|---:|---:|---:|---|
-          {% set query_result = awg_query | default({'stdout_lines': []}) %}
-          {% for row in query_result.stdout_lines %}
+          {% for row in awg_query.stdout_lines %}
           | {{ row }} |
           {% endfor %}
         dest: "{{ awg_report_output }}"
@@ -169,4 +195,4 @@
 
     - name: Show report location
       ansible.builtin.debug:
-        msg: "Report generated: {{ awg_report_output }} (DB: {{ awg_found_db | default(awg_effective_db_path) }})"
+        msg: "Report generated: {{ awg_report_output }} (DB: {{ awg_effective_db_path }})"
