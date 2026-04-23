@@ -39,6 +39,45 @@
       changed_when: false
       failed_when: false
 
+    - name: Resolve effective sqlite DB path inside container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ awg_container_name }}"
+          - sh
+          - -lc
+          - |
+            TARGET="{{ awg_sqlite_db_path }}"
+            case "$TARGET" in
+              *.db|*.sqlite)
+                echo "$TARGET"
+                ;;
+              *.conf)
+                DB_FROM_CONF=$(grep -Eo '/[^"[:space:]]+\.(db|sqlite)' "$TARGET" 2>/dev/null | head -n1 || true)
+                if [ -n "$DB_FROM_CONF" ]; then
+                  echo "$DB_FROM_CONF"
+                else
+                  DIRNAME=$(dirname "$TARGET")
+                  FOUND=$(find "$DIRNAME" -maxdepth 2 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null | head -n1 || true)
+                  if [ -n "$FOUND" ]; then
+                    echo "$FOUND"
+                  else
+                    echo "$TARGET"
+                  fi
+                fi
+                ;;
+              *)
+                echo "$TARGET"
+                ;;
+            esac
+      register: awg_effective_db_path_cmd
+      changed_when: false
+
+    - name: Set effective sqlite DB path
+      ansible.builtin.set_fact:
+        awg_effective_db_path: "{{ awg_effective_db_path_cmd.stdout | trim }}"
+
     - name: Read clientsTable data via sqlite3 inside container
       ansible.builtin.command:
         argv:
@@ -46,7 +85,7 @@
           - exec
           - "{{ awg_container_name }}"
           - sqlite3
-          - "{{ awg_sqlite_db_path }}"
+          - "{{ awg_effective_db_path }}"
           - "{{ awg_sql_query }}"
       register: awg_query
       changed_when: false
@@ -57,7 +96,7 @@
         argv:
           - docker
           - cp
-          - "{{ awg_container_name }}:{{ awg_sqlite_db_path }}"
+          - "{{ awg_container_name }}:{{ awg_effective_db_path }}"
           - "{{ awg_tmp_db_path }}"
       register: awg_db_copy
       changed_when: true
@@ -102,4 +141,4 @@
 
     - name: Show report location
       ansible.builtin.debug:
-        msg: "Report generated: {{ awg_report_output }}"
+        msg: "Report generated: {{ awg_report_output }} (DB: {{ awg_effective_db_path }})"
