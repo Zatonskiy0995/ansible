@@ -36,6 +36,11 @@
 
    ansible-playbook playbooks/awg_clients_report.yml
 
+Если запускаешь без `ansible.cfg`, укажи inventory явно:
+
+ansible-playbook -i inventories/hosts.yml --syntax-check playbooks/awg_clients_report.yml
+ansible-playbook -i inventories/hosts.yml playbooks/awg_clients_report.yml
+
 ## 4) Запуск через Ubuntu-скрипт (рекомендуется)
 
 Скрипт: [scripts/ubuntu_run_awg_report.sh](scripts/ubuntu_run_awg_report.sh)
