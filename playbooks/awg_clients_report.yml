@@ -48,29 +48,54 @@
           - sh
           - -lc
           - |
+            is_sqlite_file() {
+              [ -f "$1" ] && head -c 16 "$1" 2>/dev/null | grep -q '^SQLite format 3'
+            }
+
             TARGET="{{ awg_sqlite_db_path }}"
             case "$TARGET" in
               *.db|*.sqlite)
+                if is_sqlite_file "$TARGET"; then
+                  echo "$TARGET"
+                  exit 0
+                fi
                 echo "$TARGET"
                 ;;
               *.conf)
                 DB_FROM_CONF=$(grep -Eo '/[^"[:space:]]+\.(db|sqlite)' "$TARGET" 2>/dev/null | head -n1 || true)
-                if [ -n "$DB_FROM_CONF" ]; then
+                if [ -n "$DB_FROM_CONF" ] && is_sqlite_file "$DB_FROM_CONF"; then
                   echo "$DB_FROM_CONF"
+                  exit 0
                 else
-                  DIRNAME=$(dirname "$TARGET")
-                  FOUND=$(find "$DIRNAME" -maxdepth 2 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null | head -n1 || true)
-                  if [ -n "$FOUND" ]; then
-                    echo "$FOUND"
-                  else
-                    echo "$TARGET"
-                  fi
+                  for DIRNAME in "$(dirname "$TARGET")" /opt/amnezia/awg /opt/amnezia /etc/amnezia; do
+                    [ -d "$DIRNAME" ] || continue
+                    while IFS= read -r FOUND; do
+                      if is_sqlite_file "$FOUND"; then
+                        echo "$FOUND"
+                        exit 0
+                      fi
+                    done < <(find "$DIRNAME" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null)
+                  done
                 fi
                 ;;
               *)
                 echo "$TARGET"
                 ;;
             esac
+
+            # Фолбэк: если явно заданный путь невалидный, пробуем найти любой SQLite в стандартных каталогах
+            for DIRNAME in /opt/amnezia/awg /opt/amnezia /etc/amnezia; do
+              [ -d "$DIRNAME" ] || continue
+              while IFS= read -r FOUND; do
+                if is_sqlite_file "$FOUND"; then
+                  echo "$FOUND"
+                  exit 0
+                fi
+              done < <(find "$DIRNAME" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null)
+            done
+
+            # Если не нашли, вернем исходное значение для явной диагностики
+            echo "$TARGET"
       register: awg_effective_db_path_cmd
       changed_when: false
 
@@ -100,6 +125,18 @@
           - "{{ awg_tmp_db_path }}"
       register: awg_db_copy
       changed_when: true
+      when: sqlite3_in_container.rc != 0
+
+    - name: Validate copied file is sqlite database (fallback)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import sys; h=open(sys.argv[1],'rb').read(16); raise SystemExit(0 if h.startswith(b'SQLite format 3') else 2)"
+          - "{{ awg_tmp_db_path }}"
+      register: awg_db_validate
+      changed_when: false
+      failed_when: awg_db_validate.rc != 0
       when: sqlite3_in_container.rc != 0
 
     - name: Read clientsTable data via host python sqlite3 (fallback)
