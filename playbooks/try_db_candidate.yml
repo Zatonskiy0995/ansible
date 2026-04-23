@@ -1,0 +1,61 @@
+---
+- name: Copy DB candidate from container to host
+  ansible.builtin.command:
+    argv:
+      - docker
+      - cp
+      - "{{ awg_container_name }}:{{ awg_db_candidate_path }}"
+      - "/tmp/awg_test_{{ candidate_index }}.db"
+  register: awg_cp_result
+  changed_when: true
+  failed_when: false
+
+- name: Check if copied file is valid SQLite with clientsTable
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sqlite3, sys
+        try:
+            conn = sqlite3.connect(sys.argv[1])
+            cur = conn.cursor()
+            cur.execute('SELECT 1 FROM clientsTable LIMIT 1')
+            conn.close()
+            sys.exit(0)
+        except:
+            sys.exit(1)
+      - "/tmp/awg_test_{{ candidate_index }}.db"
+  register: awg_db_check
+  changed_when: false
+  failed_when: false
+
+- name: Read data from valid DB
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sqlite3, sys
+        conn = sqlite3.connect(sys.argv[1])
+        cur = conn.cursor()
+        query = sys.argv[2]
+        for row in cur.execute(query):
+            print(row[0])
+        conn.close()
+      - "/tmp/awg_test_{{ candidate_index }}.db"
+      - "{{ awg_sql_query }}"
+  register: awg_query_result
+  changed_when: false
+  when: awg_db_check.rc == 0
+
+- name: Clean up test DB file
+  ansible.builtin.file:
+    path: "/tmp/awg_test_{{ candidate_index }}.db"
+    state: absent
+
+- name: Set global result and break if successful
+  ansible.builtin.set_fact:
+    awg_query: "{{ awg_query_result }}"
+    awg_found_db: "{{ awg_db_candidate_path }}"
+  when: awg_db_check.rc == 0
