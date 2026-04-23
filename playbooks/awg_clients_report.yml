@@ -142,25 +142,9 @@
           [ -n "$DB_PATH" ] || continue
           TMP_FILE=$(mktemp /tmp/awg_clients_report.XXXXXX.db)
           if docker cp "$CONTAINER:$DB_PATH" "$TMP_FILE" >/dev/null 2>&1; then
-            if python3 - "$TMP_FILE" <<'PY' >/dev/null 2>&1
-import sqlite3, sys
-db = sys.argv[1]
-conn = sqlite3.connect(db)
-cur = conn.cursor()
-cur.execute("SELECT 1 FROM clientsTable LIMIT 1")
-conn.close()
-PY
+            if python3 -c "import sqlite3,sys; conn=sqlite3.connect(sys.argv[1]); cur=conn.cursor(); cur.execute('SELECT 1 FROM clientsTable LIMIT 1'); conn.close()" "$TMP_FILE" >/dev/null 2>&1
             then
-              python3 - "$TMP_FILE" "$SQL_QUERY" <<'PY'
-import sqlite3, sys
-db = sys.argv[1]
-query = sys.argv[2]
-conn = sqlite3.connect(db)
-cur = conn.cursor()
-for row in cur.execute(query):
-    print(row[0])
-conn.close()
-PY
+              python3 -c "import sqlite3,sys; conn=sqlite3.connect(sys.argv[1]); cur=conn.cursor(); [print(r[0]) for r in cur.execute(sys.argv[2])]; conn.close()" "$TMP_FILE" "$SQL_QUERY"
               FOUND_DB="$DB_PATH"
               rm -f "$TMP_FILE"
               break
