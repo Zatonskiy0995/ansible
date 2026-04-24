@@ -26,20 +26,7 @@
       changed_when: false
       failed_when: container_state.rc != 0 or (container_state.stdout | trim) != 'true'
 
-    - name: Check sqlite3 exists inside container
-      ansible.builtin.command:
-        argv:
-          - docker
-          - exec
-          - "{{ awg_container_name }}"
-          - sh
-          - -lc
-          - command -v sqlite3
-      register: sqlite3_in_container
-      changed_when: false
-      failed_when: false
-
-    - name: Resolve effective sqlite DB path inside container
+    - name: Find SQLite DB file in container
       ansible.builtin.command:
         argv:
           - docker
@@ -48,42 +35,27 @@
           - sh
           - -lc
           - |
+            # Функция проверки SQLite формата
             is_sqlite_file() {
               [ -f "$1" ] && head -c 16 "$1" 2>/dev/null | grep -q '^SQLite format 3'
             }
 
-            TARGET="{{ awg_sqlite_db_path }}"
-            case "$TARGET" in
-              *.db|*.sqlite)
-                if is_sqlite_file "$TARGET"; then
-                  echo "$TARGET"
-                  exit 0
-                fi
-                echo "$TARGET"
-                ;;
-              *.conf)
-                DB_FROM_CONF=$(grep -Eo '/[^"[:space:]]+\.(db|sqlite)' "$TARGET" 2>/dev/null | head -n1 || true)
-                if [ -n "$DB_FROM_CONF" ] && is_sqlite_file "$DB_FROM_CONF"; then
-                  echo "$DB_FROM_CONF"
-                  exit 0
-                else
-                  for DIRNAME in "$(dirname "$TARGET")" /opt/amnezia/awg /opt/amnezia /etc/amnezia; do
-                    [ -d "$DIRNAME" ] || continue
-                    while IFS= read -r FOUND; do
-                      if is_sqlite_file "$FOUND"; then
-                        echo "$FOUND"
-                        exit 0
-                      fi
-                    done < <(find "$DIRNAME" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null)
-                  done
-                fi
-                ;;
-              *)
-                echo "$TARGET"
-                ;;
-            esac
+            # Сначала проверим заданный путь
+            if is_sqlite_file "{{ awg_sqlite_db_path }}"; then
+              echo "{{ awg_sqlite_db_path }}"
+              exit 0
+            fi
 
-            # Фолбэк: если явно заданный путь невалидный, пробуем найти любой SQLite в стандартных каталогах
+            # Если это .conf файл, ищем в нём путь к БД
+            if echo "{{ awg_sqlite_db_path }}" | grep -q '\.conf$'; then
+              DB_FROM_CONF=$(grep -Eo '/[^"[:space:]]+\.(db|sqlite)' "{{ awg_sqlite_db_path }}" 2>/dev/null | head -n1 || true)
+              if [ -n "$DB_FROM_CONF" ] && is_sqlite_file "$DB_FROM_CONF"; then
+                echo "$DB_FROM_CONF"
+                exit 0
+              fi
+            fi
+
+            # Ищем в стандартных каталогах
             for DIRNAME in /opt/amnezia/awg /opt/amnezia /etc/amnezia; do
               [ -d "$DIRNAME" ] || continue
               while IFS= read -r FOUND; do
@@ -94,121 +66,34 @@
               done < <(find "$DIRNAME" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite' \) 2>/dev/null)
             done
 
-            # Если не нашли, вернем исходное значение для явной диагностики
-            echo "$TARGET"
-      register: awg_effective_db_path_cmd
+            echo "ERROR: No SQLite database found" >&2
+            exit 1
+      register: db_path_result
       changed_when: false
 
-    - name: Set effective sqlite DB path
+    - name: Fail if database not found
+      ansible.builtin.fail:
+        msg: "SQLite database not found in container {{ awg_container_name }}"
+      when: db_path_result.rc != 0
+
+    - name: Set database path
       ansible.builtin.set_fact:
-        awg_effective_db_path: "{{ awg_effective_db_path_cmd.stdout | trim }}"
+        awg_db_container_path: "{{ db_path_result.stdout | trim }}"
 
-    - name: Read clientsTable data via sqlite3 inside container
+    - name: Copy database from container to host
       ansible.builtin.command:
         argv:
           - docker
-          - exec
-          - "{{ awg_container_name }}"
-          - sqlite3
-          - "{{ awg_effective_db_path }}"
-          - "{{ awg_sql_query }}"
+          - cp
+          - "{{ awg_container_name }}:{{ awg_db_container_path }}"
+          - "{{ awg_tmp_db_path }}"
+      changed_when: true
+
+    - name: Query clientsTable data from database
+      ansible.builtin.shell:
+        cmd: "sqlite3 '{{ awg_tmp_db_path }}' \"{{ awg_sql_query }}\""
       register: awg_query
       changed_when: false
-      when: sqlite3_in_container.rc == 0
-
-    - name: Find and list all potential DB files in container
-      ansible.builtin.command:
-        argv:
-          - docker
-          - exec
-          - "{{ awg_container_name }}"
-          - sh
-          - -lc
-          - |
-            {
-              [ -n "{{ awg_effective_db_path }}" ] && echo "{{ awg_effective_db_path }}"
-              [ -n "{{ awg_sqlite_db_path }}" ] && echo "{{ awg_sqlite_db_path }}"
-              for d in /opt/amnezia /opt /var/lib /etc; do
-                [ -d "$d" ] || continue
-                find "$d" -maxdepth 6 -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null || true
-              done
-            } | awk 'NF' | sort -u
-      register: awg_db_candidates
-      changed_when: false
-      when: sqlite3_in_container.rc != 0
-
-    - name: Read clientsTable data via host python sqlite3 (fallback)
-      ansible.builtin.copy:
-        content: |
-          #!/usr/bin/env python3
-          import subprocess
-          import sqlite3
-          import os
-          import tempfile
-          import sys
-
-          container = "{{ awg_container_name }}"
-          candidates = """{{ awg_db_candidates.stdout_lines | join("\n") if sqlite3_in_container.rc != 0 else "" }}"""
-          sql_query = """{{ awg_sql_query }}"""
-
-          for db_path in candidates.strip().split('\n'):
-              if not db_path:
-                  continue
-
-              with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
-                  tmp_path = tmp.name
-
-              try:
-                  # Copy DB from container
-                  result = subprocess.run(['docker', 'cp', f'{container}:{db_path}', tmp_path], 
-                                        capture_output=True, timeout=10)
-                  if result.returncode != 0:
-                      continue
-
-                  # Check if it's valid SQLite with clientsTable
-                  try:
-                      conn = sqlite3.connect(tmp_path)
-                      cur = conn.cursor()
-                      cur.execute('SELECT 1 FROM clientsTable LIMIT 1')
-                      conn.close()
-                  except:
-                      os.unlink(tmp_path)
-                      continue
-
-                  # Execute query
-                  conn = sqlite3.connect(tmp_path)
-                  cur = conn.cursor()
-                  for row in cur.execute(sql_query):
-                      print(row[0])
-                  conn.close()
-                  os.unlink(tmp_path)
-                  sys.exit(0)
-
-              except Exception as e:
-                  if os.path.exists(tmp_path):
-                      os.unlink(tmp_path)
-                  continue
-
-          print("ERROR: No valid SQLite DB with clientsTable found", file=sys.stderr)
-          sys.exit(1)
-        dest: /tmp/awg_read_db.py
-        mode: '0755'
-      when: sqlite3_in_container.rc != 0
-
-    - name: Execute Python DB reader
-      ansible.builtin.command:
-        argv:
-          - python3
-          - /tmp/awg_read_db.py
-      register: awg_query
-      changed_when: false
-      when: sqlite3_in_container.rc != 0
-
-    - name: Cleanup Python DB reader script
-      ansible.builtin.file:
-        path: /tmp/awg_read_db.py
-        state: absent
-      when: sqlite3_in_container.rc != 0
 
     - name: Render markdown report
       ansible.builtin.copy:
@@ -229,6 +114,11 @@
         dest: "{{ awg_report_output }}"
         mode: "0644"
 
+    - name: Cleanup temporary database file
+      ansible.builtin.file:
+        path: "{{ awg_tmp_db_path }}"
+        state: absent
+
     - name: Show report location
       ansible.builtin.debug:
-        msg: "Report generated: {{ awg_report_output }} (DB: {{ awg_effective_db_path }})"
+        msg: "✓ Отчет сформирован: {{ awg_report_output }} (БД: {{ awg_db_container_path }})"
