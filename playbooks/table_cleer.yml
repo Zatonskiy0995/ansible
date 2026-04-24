@@ -1,0 +1,41 @@
+services:
+  export-clients-traffic:
+    image: python:3.12-alpine
+    container_name: export-clients-traffic
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./export:/export
+    command:
+      - sh
+      - -lc
+      - |
+        set -e
+        apk add --no-cache docker-cli >/dev/null
+
+        docker cp amnezia-awg2:/opt/amnezia/awg/clientsTable /export/clientsTable.json
+
+        python3 <<'PY'
+        import json
+
+        src = "/export/clientsTable.json"
+        dst = "/export/clients_traffic.txt"
+
+        with open(src, "r", encoding="utf-8") as f:
+            clients = json.load(f)
+
+        lines = []
+        lines.append("Имя пользователя\tВходящий трафик\tИсходящий трафик")
+
+        for client in clients:
+            user = client.get("userData", {})
+            name = user.get("clientName", "Без имени")
+            received = user.get("dataReceived", "-")
+            sent = user.get("dataSent", "-")
+
+            lines.append(f"{name}\t{received}\t{sent}")
+
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        print(f"Готово: {dst}")
+        PY
